@@ -123,9 +123,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
         --gateway-bind lan \
         --skip-channels \
         --skip-skills \
-        --skip-health
+        --skip-health || echo "Onboard failed or skipped, will use config patching"
 
-    echo "Onboard completed"
+    echo "Onboard completed or skipped"
 else
     echo "Using existing config"
 fi
