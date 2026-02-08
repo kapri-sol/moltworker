@@ -61,3 +61,7 @@ test/e2e/.dev.vars
 
 # npm config
 .npmrc
+
+# Production infra secrets
+infra/secrets.env
+infra/terraform.tfvars
