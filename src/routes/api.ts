@@ -386,6 +386,143 @@ adminApi.post('/credentials', async (c) => {
   }
 });
 
+// GET /api/admin/provider - Get current provider configuration
+adminApi.get('/provider', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  try {
+    // Read openclaw.json config
+    const result = await sandbox.exec('cat /root/.openclaw/openclaw.json 2>/dev/null || echo "{}"');
+    const stdout = result.stdout?.trim() || '{}';
+
+    let config: {
+      models?: {
+        providers?: Record<
+          string,
+          {
+            api: string;
+            baseUrl?: string;
+            models?: Array<{ id: string; name: string }>;
+          }
+        >;
+      };
+      agents?: {
+        defaults?: {
+          model?: {
+            primary?: string;
+          };
+        };
+      };
+    };
+
+    try {
+      config = JSON.parse(stdout);
+    } catch {
+      return c.json({ error: 'Failed to parse config' }, 500);
+    }
+
+    const providers: Array<{
+      name: string;
+      api: string;
+      models: Array<{ id: string; name: string }>;
+    }> = [];
+
+    if (config.models?.providers) {
+      for (const [name, provider] of Object.entries(config.models.providers)) {
+        providers.push({
+          name,
+          api: provider.api,
+          models: provider.models || [],
+        });
+      }
+    }
+
+    const defaultModel = config.agents?.defaults?.model?.primary || null;
+
+    return c.json({
+      defaultModel,
+      providers,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
+});
+
+// POST /api/admin/provider/default - Set default model
+adminApi.post('/provider/default', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  try {
+    const body = (await c.req.json()) as { model: string };
+    const { model } = body;
+
+    if (!model || typeof model !== 'string') {
+      return c.json({ error: 'model is required and must be a string' }, 400);
+    }
+
+    // Validate model format (should be "provider/model-id")
+    if (!model.includes('/')) {
+      return c.json({ error: 'model must be in format "provider/model-id"' }, 400);
+    }
+
+    // Read current config
+    const readResult = await sandbox.exec('cat /root/.openclaw/openclaw.json 2>/dev/null || echo "{}"');
+    const stdout = readResult.stdout?.trim() || '{}';
+
+    let config: {
+      agents?: {
+        defaults?: {
+          model?: {
+            primary?: string;
+          };
+        };
+      };
+    };
+
+    try {
+      config = JSON.parse(stdout);
+    } catch {
+      return c.json({ error: 'Failed to parse config' }, 500);
+    }
+
+    // Update default model
+    config.agents = config.agents || {};
+    config.agents.defaults = config.agents.defaults || {};
+    config.agents.defaults.model = { primary: model };
+
+    // Write updated config
+    const configJson = JSON.stringify(config, null, 2);
+    try {
+      await sandbox.writeFile('/root/.openclaw/openclaw.json', configJson);
+    } catch (writeErr) {
+      const writeErrorMessage = writeErr instanceof Error ? writeErr.message : 'Unknown write error';
+      return c.json({ error: `Failed to write config: ${writeErrorMessage}` }, 500);
+    }
+
+    // Write user preference file (survives container restarts)
+    try {
+      await sandbox.writeFile('/root/.openclaw/.user-default-model', model);
+    } catch (prefErr) {
+      // Non-critical, just log
+      console.error('Failed to write user preference file:', prefErr);
+    }
+
+    // Trigger R2 sync
+    const syncResult = await syncToR2(sandbox, c.env);
+
+    return c.json({
+      success: true,
+      message: `Default model set to ${model}`,
+      synced: syncResult.success,
+      syncError: syncResult.success ? undefined : syncResult.error,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
+});
+
 // Mount admin API routes under /admin
 api.route('/admin', adminApi);
 

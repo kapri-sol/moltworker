@@ -8,12 +8,16 @@ import {
   triggerSync,
   getCredentialStatus,
   uploadCredential,
+  getProviderStatus,
+  updateDefaultModel,
   AuthError,
   type PendingDevice,
   type PairedDevice,
   type DeviceListResponse,
   type StorageStatusResponse,
   type CredentialFile,
+  type ProviderInfo,
+  type ProviderStatusResponse,
 } from '../api';
 import './AdminPage.css';
 
@@ -53,12 +57,15 @@ export default function AdminPage() {
   const [paired, setPaired] = useState<PairedDevice[]>([]);
   const [storageStatus, setStorageStatus] = useState<StorageStatusResponse | null>(null);
   const [credentialFiles, setCredentialFiles] = useState<CredentialFile[]>([]);
+  const [providerStatus, setProviderStatus] = useState<ProviderStatusResponse | null>(null);
+  const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [restartInProgress, setRestartInProgress] = useState(false);
   const [syncInProgress, setSyncInProgress] = useState(false);
   const [uploadInProgress, setUploadInProgress] = useState(false);
+  const [modelUpdateInProgress, setModelUpdateInProgress] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -103,11 +110,26 @@ export default function AdminPage() {
     }
   }, []);
 
+  const fetchProviders = useCallback(async () => {
+    try {
+      const status = await getProviderStatus();
+      setProviderStatus(status);
+      // Initialize selected model to current default
+      if (status.defaultModel && !selectedModel) {
+        setSelectedModel(status.defaultModel);
+      }
+    } catch (err) {
+      // Don't show error for provider status - it's not critical
+      console.error('Failed to fetch provider status:', err);
+    }
+  }, [selectedModel]);
+
   useEffect(() => {
     fetchDevices();
     fetchStorageStatus();
     fetchCredentials();
-  }, [fetchDevices, fetchStorageStatus, fetchCredentials]);
+    fetchProviders();
+  }, [fetchDevices, fetchStorageStatus, fetchCredentials, fetchProviders]);
 
   const handleApprove = async (requestId: string) => {
     setActionInProgress(requestId);
@@ -227,6 +249,46 @@ export default function AdminPage() {
     }
   };
 
+  const handleUpdateDefaultModel = async () => {
+    if (!selectedModel) return;
+
+    if (
+      !confirm(
+        'Changing the default model requires restarting the gateway. All connected clients will be temporarily disconnected. Continue?',
+      )
+    ) {
+      return;
+    }
+
+    setModelUpdateInProgress(true);
+    try {
+      // Update the default model
+      const updateResult = await updateDefaultModel(selectedModel);
+
+      if (!updateResult.success) {
+        setError(updateResult.error || 'Failed to update default model');
+        setModelUpdateInProgress(false);
+        return;
+      }
+
+      // Restart the gateway
+      const restartResult = await restartGateway();
+
+      if (restartResult.success) {
+        setError(null);
+        // Refresh provider status
+        await fetchProviders();
+        alert('Default model updated and gateway restarted successfully.');
+      } else {
+        setError(restartResult.error || 'Failed to restart gateway');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update model');
+    } finally {
+      setModelUpdateInProgress(false);
+    }
+  };
+
   return (
     <div className="devices-page">
       {error && (
@@ -300,6 +362,83 @@ export default function AdminPage() {
           Restart the gateway to apply configuration changes or recover from errors. All connected
           clients will be temporarily disconnected.
         </p>
+      </section>
+
+      <section className="devices-section">
+        <div className="section-header">
+          <h2>AI Provider</h2>
+        </div>
+
+        {providerStatus && providerStatus.providers.length > 0 ? (
+          <div className="provider-section">
+            <div className="provider-info">
+              <p className="hint">
+                <strong>Current default model:</strong>{' '}
+                <code>{providerStatus.defaultModel || 'None'}</code>
+              </p>
+            </div>
+
+            <div className="provider-list">
+              {providerStatus.providers.map((provider) =>
+                provider.models.map((model) => {
+                  const fullModelId = `${provider.name}/${model.id}`;
+                  const isSelected = selectedModel === fullModelId;
+                  const isCurrent = providerStatus.defaultModel === fullModelId;
+
+                  return (
+                    <label key={fullModelId} className="provider-item">
+                      <input
+                        type="radio"
+                        name="default-model"
+                        value={fullModelId}
+                        checked={isSelected}
+                        onChange={() => setSelectedModel(fullModelId)}
+                        disabled={modelUpdateInProgress}
+                      />
+                      <div className="provider-details">
+                        <div className="provider-name">
+                          {provider.name}
+                          {isCurrent && <span className="current-badge">Current</span>}
+                        </div>
+                        <div className="model-name">{model.id}</div>
+                        <div className="provider-api">{provider.api}</div>
+                      </div>
+                    </label>
+                  );
+                }),
+              )}
+            </div>
+
+            <div className="provider-actions">
+              <button
+                className="btn btn-primary"
+                onClick={handleUpdateDefaultModel}
+                disabled={
+                  modelUpdateInProgress ||
+                  !selectedModel ||
+                  selectedModel === providerStatus.defaultModel
+                }
+              >
+                {modelUpdateInProgress && <ButtonSpinner />}
+                {modelUpdateInProgress ? 'Applying...' : 'Apply & Restart Gateway'}
+              </button>
+            </div>
+
+            <p className="hint">
+              <strong>Note:</strong> Native API key providers (ANTHROPIC_API_KEY, OPENAI_API_KEY)
+              are configured via environment variables and work automatically. Upload OAuth
+              credentials below to use subscription-based models (ChatGPT Plus, Claude Pro).
+            </p>
+          </div>
+        ) : (
+          <div className="empty-state">
+            <p>No providers configured</p>
+            <p className="hint">
+              Configure providers via environment variables (CF_AI_GATEWAY_MODEL, GOOGLE_API_KEY,
+              etc.)
+            </p>
+          </div>
+        )}
       </section>
 
       <section className="devices-section">

@@ -174,12 +174,20 @@ if (process.env.OPENCLAW_DEV_MODE === 'true') {
 // so we don't need to patch the provider config. Writing a provider
 // entry without a models array breaks OpenClaw's config validation.
 
+// Initialize config structure for providers
+config.models = config.models || {};
+config.models.providers = config.models.providers || {};
+
+// Track first available provider for fallback default
+let firstProvider = null;
+
 // AI Gateway model override (CF_AI_GATEWAY_MODEL=provider/model-id)
-// Adds a provider entry for any AI Gateway provider and sets it as default model.
+// Adds a provider entry for any AI Gateway provider.
 // Examples:
 //   workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast
 //   openai/gpt-4o
 //   anthropic/claude-sonnet-4-5
+//   google-ai-studio/gemini-2.5-flash
 if (process.env.CF_AI_GATEWAY_MODEL) {
     const raw = process.env.CF_AI_GATEWAY_MODEL;
     const slashIdx = raw.indexOf('/');
@@ -207,39 +215,55 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
         else api = 'openai-completions';
         const providerName = 'cf-ai-gw-' + gwProvider;
 
-        config.models = config.models || {};
-        config.models.providers = config.models.providers || {};
         config.models.providers[providerName] = {
             baseUrl: baseUrl,
             apiKey: apiKey,
             api: api,
             models: [{ id: modelId, name: modelId, contextWindow: 131072, maxTokens: 8192 }],
         };
-        config.agents = config.agents || {};
-        config.agents.defaults = config.agents.defaults || {};
-        config.agents.defaults.model = { primary: providerName + '/' + modelId };
-        console.log('AI Gateway model override: provider=' + providerName + ' model=' + modelId + ' via ' + baseUrl);
+        firstProvider = firstProvider || (providerName + '/' + modelId);
+        console.log('AI Gateway provider registered: ' + providerName + '/' + modelId + ' via ' + baseUrl);
     } else {
         console.warn('CF_AI_GATEWAY_MODEL set but missing required config (account ID, gateway ID, or API key)');
     }
 }
 
 // Direct Google API key (bypasses Cloudflare AI Gateway)
-if (process.env.GOOGLE_API_KEY && !process.env.CF_AI_GATEWAY_MODEL) {
+// NOTE: Removed exclusive condition - this can coexist with CF_AI_GATEWAY_MODEL
+if (process.env.GOOGLE_API_KEY) {
     const modelId = process.env.GOOGLE_MODEL || 'gemini-2.5-flash';
     const googleBaseUrl = 'https://generativelanguage.googleapis.com/v1beta';
-    config.models = config.models || {};
-    config.models.providers = config.models.providers || {};
     config.models.providers['google-direct'] = {
         baseUrl: googleBaseUrl,
         apiKey: process.env.GOOGLE_API_KEY,
         api: 'google-generative-ai',
         models: [{ id: modelId, name: modelId, contextWindow: 1048576, maxTokens: 8192 }],
     };
+    firstProvider = firstProvider || ('google-direct/' + modelId);
+    console.log('Direct Google API provider registered: google-direct/' + modelId + ' via ' + googleBaseUrl);
+}
+
+// Set default model: user preference > first available provider
+const userDefaultFile = '/root/.openclaw/.user-default-model';
+let defaultModel = null;
+try {
+    defaultModel = fs.readFileSync(userDefaultFile, 'utf8').trim();
+    if (defaultModel) {
+        console.log('Using user-selected default model: ' + defaultModel);
+    }
+} catch (e) {
+    // File doesn't exist, will use firstProvider
+}
+
+if (!defaultModel && firstProvider) {
+    defaultModel = firstProvider;
+    console.log('Using first available provider as default: ' + defaultModel);
+}
+
+if (defaultModel) {
     config.agents = config.agents || {};
     config.agents.defaults = config.agents.defaults || {};
-    config.agents.defaults.model = { primary: 'google-direct/' + modelId };
-    console.log('Direct Google API: model=' + modelId + ' via ' + googleBaseUrl);
+    config.agents.defaults.model = { primary: defaultModel };
 }
 
 // Telegram configuration

@@ -170,3 +170,34 @@ export async function uploadCredential(
     body: JSON.stringify({ filename, content }),
   });
 }
+
+export interface ProviderInfo {
+  name: string;
+  api: string;
+  models: Array<{ id: string; name: string }>;
+}
+
+export interface ProviderStatusResponse {
+  defaultModel: string | null;
+  providers: ProviderInfo[];
+  error?: string;
+}
+
+export interface UpdateDefaultModelResponse {
+  success: boolean;
+  message?: string;
+  synced?: boolean;
+  syncError?: string;
+  error?: string;
+}
+
+export async function getProviderStatus(): Promise<ProviderStatusResponse> {
+  return apiRequest<ProviderStatusResponse>('/provider');
+}
+
+export async function updateDefaultModel(model: string): Promise<UpdateDefaultModelResponse> {
+  return apiRequest<UpdateDefaultModelResponse>('/provider/default', {
+    method: 'POST',
+    body: JSON.stringify({ model }),
+  });
+}
