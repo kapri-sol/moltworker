@@ -295,6 +295,97 @@ adminApi.post('/gateway/restart', async (c) => {
   }
 });
 
+// GET /api/admin/credentials - List OAuth credential files
+adminApi.get('/credentials', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  try {
+    // List files in credentials directory
+    const result = await sandbox.exec('ls -la /root/.openclaw/credentials/ 2>/dev/null || echo ""');
+    const stdout = result.stdout?.trim() || '';
+
+    if (!stdout || stdout === '') {
+      return c.json({ files: [] });
+    }
+
+    // Parse ls -la output
+    const lines = stdout.split('\n').slice(1); // Skip total line
+    const files: Array<{ name: string; size: number; modified: string }> = [];
+
+    for (const line of lines) {
+      // Parse ls -la format: -rw-r--r-- 1 user group size month day time filename
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 9) continue;
+
+      const name = parts.slice(8).join(' '); // Handle filenames with spaces
+      if (name === '.' || name === '..') continue;
+
+      const size = parseInt(parts[4], 10);
+      const month = parts[5];
+      const day = parts[6];
+      const time = parts[7];
+      const modified = `${month} ${day} ${time}`;
+
+      files.push({ name, size, modified });
+    }
+
+    return c.json({ files });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
+});
+
+// POST /api/admin/credentials - Upload an OAuth credential file
+adminApi.post('/credentials', async (c) => {
+  const sandbox = c.get('sandbox');
+
+  try {
+    const body = (await c.req.json()) as { filename: string; content: unknown };
+    const { filename, content } = body;
+
+    if (!filename || typeof filename !== 'string') {
+      return c.json({ error: 'filename is required' }, 400);
+    }
+
+    if (!content || typeof content !== 'object') {
+      return c.json({ error: 'content must be a JSON object' }, 400);
+    }
+
+    // Validate filename: prevent path traversal, allow only safe characters
+    if (!/^[a-zA-Z0-9._-]+$/.test(filename) || filename.includes('..')) {
+      return c.json({ error: 'Invalid filename. Only alphanumeric, dot, dash, and underscore allowed.' }, 400);
+    }
+
+    // Ensure credentials directory exists
+    await sandbox.exec('mkdir -p /root/.openclaw/credentials/');
+
+    // Write credential file
+    const credentialPath = `/root/.openclaw/credentials/${filename}`;
+    const contentStr = JSON.stringify(content, null, 2);
+
+    try {
+      await sandbox.writeFile(credentialPath, contentStr);
+    } catch (writeErr) {
+      const writeErrorMessage = writeErr instanceof Error ? writeErr.message : 'Unknown write error';
+      return c.json({ error: `Failed to write file: ${writeErrorMessage}` }, 500);
+    }
+
+    // Trigger immediate sync to R2
+    const syncResult = await syncToR2(sandbox, c.env);
+
+    return c.json({
+      success: true,
+      message: `Credential file '${filename}' uploaded successfully`,
+      synced: syncResult.success,
+      syncError: syncResult.success ? undefined : syncResult.error,
+    });
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return c.json({ error: errorMessage }, 500);
+  }
+});
+
 // Mount admin API routes under /admin
 api.route('/admin', adminApi);
 

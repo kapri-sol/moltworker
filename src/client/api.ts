@@ -137,3 +137,36 @@ export async function triggerSync(): Promise<SyncResponse> {
     method: 'POST',
   });
 }
+
+export interface CredentialFile {
+  name: string;
+  size: number;
+  modified: string;
+}
+
+export interface CredentialStatusResponse {
+  files: CredentialFile[];
+  error?: string;
+}
+
+export interface UploadCredentialResponse {
+  success: boolean;
+  message?: string;
+  synced?: boolean;
+  syncError?: string;
+  error?: string;
+}
+
+export async function getCredentialStatus(): Promise<CredentialStatusResponse> {
+  return apiRequest<CredentialStatusResponse>('/credentials');
+}
+
+export async function uploadCredential(
+  filename: string,
+  content: object,
+): Promise<UploadCredentialResponse> {
+  return apiRequest<UploadCredentialResponse>('/credentials', {
+    method: 'POST',
+    body: JSON.stringify({ filename, content }),
+  });
+}

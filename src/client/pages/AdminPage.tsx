@@ -6,11 +6,14 @@ import {
   restartGateway,
   getStorageStatus,
   triggerSync,
+  getCredentialStatus,
+  uploadCredential,
   AuthError,
   type PendingDevice,
   type PairedDevice,
   type DeviceListResponse,
   type StorageStatusResponse,
+  type CredentialFile,
 } from '../api';
 import './AdminPage.css';
 
@@ -49,11 +52,13 @@ export default function AdminPage() {
   const [pending, setPending] = useState<PendingDevice[]>([]);
   const [paired, setPaired] = useState<PairedDevice[]>([]);
   const [storageStatus, setStorageStatus] = useState<StorageStatusResponse | null>(null);
+  const [credentialFiles, setCredentialFiles] = useState<CredentialFile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionInProgress, setActionInProgress] = useState<string | null>(null);
   const [restartInProgress, setRestartInProgress] = useState(false);
   const [syncInProgress, setSyncInProgress] = useState(false);
+  const [uploadInProgress, setUploadInProgress] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -88,10 +93,21 @@ export default function AdminPage() {
     }
   }, []);
 
+  const fetchCredentials = useCallback(async () => {
+    try {
+      const status = await getCredentialStatus();
+      setCredentialFiles(status.files || []);
+    } catch (err) {
+      // Don't show error for credential status - it's not critical
+      console.error('Failed to fetch credential status:', err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchDevices();
     fetchStorageStatus();
-  }, [fetchDevices, fetchStorageStatus]);
+    fetchCredentials();
+  }, [fetchDevices, fetchStorageStatus, fetchCredentials]);
 
   const handleApprove = async (requestId: string) => {
     setActionInProgress(requestId);
@@ -172,6 +188,45 @@ export default function AdminPage() {
     }
   };
 
+  const handleUploadCredential = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Reset the input value to allow re-uploading the same file
+    event.target.value = '';
+
+    setUploadInProgress(true);
+    try {
+      // Read file content
+      const text = await file.text();
+      let content: object;
+
+      try {
+        content = JSON.parse(text) as object;
+      } catch {
+        setError('Invalid JSON file. Please upload a valid OAuth credential file.');
+        return;
+      }
+
+      // Upload to server
+      const result = await uploadCredential(file.name, content);
+
+      if (result.success) {
+        setError(null);
+        // Refresh credential list
+        await fetchCredentials();
+        // Show success message
+        alert(`Successfully uploaded ${file.name}. ${result.synced ? 'Backed up to R2.' : 'Warning: R2 backup failed.'}`);
+      } else {
+        setError(result.error || 'Upload failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to upload credential');
+    } finally {
+      setUploadInProgress(false);
+    }
+  };
+
   return (
     <div className="devices-page">
       {error && (
@@ -244,6 +299,56 @@ export default function AdminPage() {
         <p className="hint">
           Restart the gateway to apply configuration changes or recover from errors. All connected
           clients will be temporarily disconnected.
+        </p>
+      </section>
+
+      <section className="devices-section">
+        <div className="section-header">
+          <h2>OAuth Credentials</h2>
+        </div>
+
+        {credentialFiles.length > 0 ? (
+          <div className="credential-files">
+            <p className="hint">Current credential files:</p>
+            <ul className="file-list">
+              {credentialFiles.map((file) => (
+                <li key={file.name}>
+                  <strong>{file.name}</strong> ({(file.size / 1024).toFixed(1)}KB, {file.modified})
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <div className="empty-state">
+            <p>No OAuth credentials uploaded yet</p>
+          </div>
+        )}
+
+        <div className="upload-section">
+          <label htmlFor="credential-upload" className="btn btn-primary" style={{ cursor: 'pointer' }}>
+            {uploadInProgress && <ButtonSpinner />}
+            {uploadInProgress ? 'Uploading...' : 'Choose File...'}
+          </label>
+          <input
+            id="credential-upload"
+            type="file"
+            accept=".json"
+            onChange={handleUploadCredential}
+            disabled={uploadInProgress}
+            style={{ display: 'none' }}
+          />
+        </div>
+
+        <p className="hint">
+          <strong>How to obtain OAuth credentials:</strong>
+          <br />
+          1. Install OpenClaw locally: <code>npm install -g openclaw</code>
+          <br />
+          2. Run onboarding: <code>openclaw onboard --auth-choice openai-codex</code> (or other provider)
+          <br />
+          3. Upload the generated file: <code>~/.openclaw/credentials/oauth.json</code>
+          <br />
+          4. Restart the gateway to apply the new credentials
         </p>
       </section>
 

@@ -192,14 +192,19 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
 
     let baseUrl;
     if (accountId && gatewayId) {
-        baseUrl = 'https://gateway.ai.cloudflare.com/v1/' + accountId + '/' + gatewayId + '/' + gwProvider;
+        const urlProvider = (gwProvider === 'google') ? 'google-ai-studio' : gwProvider;
+        baseUrl = 'https://gateway.ai.cloudflare.com/v1/' + accountId + '/' + gatewayId + '/' + urlProvider;
         if (gwProvider === 'workers-ai') baseUrl += '/v1';
+        else if (gwProvider === 'google-ai-studio' || gwProvider === 'google') baseUrl += '/v1beta';
     } else if (gwProvider === 'workers-ai' && process.env.CF_ACCOUNT_ID) {
         baseUrl = 'https://api.cloudflare.com/client/v4/accounts/' + process.env.CF_ACCOUNT_ID + '/ai/v1';
     }
 
     if (baseUrl && apiKey) {
-        const api = gwProvider === 'anthropic' ? 'anthropic-messages' : 'openai-completions';
+        let api;
+        if (gwProvider === 'anthropic') api = 'anthropic-messages';
+        else if (gwProvider === 'google-ai-studio' || gwProvider === 'google') api = 'google-generative-ai';
+        else api = 'openai-completions';
         const providerName = 'cf-ai-gw-' + gwProvider;
 
         config.models = config.models || {};
@@ -217,6 +222,24 @@ if (process.env.CF_AI_GATEWAY_MODEL) {
     } else {
         console.warn('CF_AI_GATEWAY_MODEL set but missing required config (account ID, gateway ID, or API key)');
     }
+}
+
+// Direct Google API key (bypasses Cloudflare AI Gateway)
+if (process.env.GOOGLE_API_KEY && !process.env.CF_AI_GATEWAY_MODEL) {
+    const modelId = process.env.GOOGLE_MODEL || 'gemini-2.5-flash';
+    const googleBaseUrl = 'https://generativelanguage.googleapis.com/v1beta';
+    config.models = config.models || {};
+    config.models.providers = config.models.providers || {};
+    config.models.providers['google-direct'] = {
+        baseUrl: googleBaseUrl,
+        apiKey: process.env.GOOGLE_API_KEY,
+        api: 'google-generative-ai',
+        models: [{ id: modelId, name: modelId, contextWindow: 1048576, maxTokens: 8192 }],
+    };
+    config.agents = config.agents || {};
+    config.agents.defaults = config.agents.defaults || {};
+    config.agents.defaults.model = { primary: 'google-direct/' + modelId };
+    console.log('Direct Google API: model=' + modelId + ' via ' + googleBaseUrl);
 }
 
 // Telegram configuration
