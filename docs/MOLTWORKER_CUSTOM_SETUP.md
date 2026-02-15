@@ -277,3 +277,104 @@ OpenClaw이 요청 시 access token 사용
 4. 배포 후 컨테이너 재시작
 5. ChatGPT 모델로 채팅 테스트
 6. AI Gateway 대시보드 확인 (OAuth 경유 시 Gateway 로그가 안 남을 수 있음 — 직접 연결)
+
+---
+
+# Phase 3: 다중 Provider 관리 + Admin UI 전환
+
+## Context
+
+`start-openclaw.sh`의 Node.js 패칭 스크립트가 provider를 **if/else 배타적으로** 설정한다.
+`CF_AI_GATEWAY_MODEL`이 있으면 `GOOGLE_API_KEY` provider는 무시됨.
+이를 수정하여 모든 가용 provider를 동시 등록하고, Admin UI에서 기본 모델을 전환할 수 있게 한다.
+
+**이전 시도 실패 원인:** `setDefaultModel`이 API 함수명과 React `useState` setter명이 충돌 → 타입 에러.
+API 함수를 `updateDefaultModel()`, state를 `currentModel`/`setCurrentModel`로 명명하여 해결.
+
+## 구현 계획
+
+### 1. `start-openclaw.sh` — 다중 Provider 동시 설정
+
+라인 183-243의 if/else 배타적 구조를 제거:
+
+- `GOOGLE_API_KEY` 조건에서 `&& !process.env.CF_AI_GATEWAY_MODEL` 제거
+- provider 등록과 기본 모델 설정을 분리
+- `.user-default-model` 파일로 사용자 선택 보존
+
+```javascript
+// 기존 CF_AI_GATEWAY_MODEL 블록은 유지 (provider 등록만, default 설정 제거)
+// 기존 GOOGLE_API_KEY 블록에서 && !CF_AI_GATEWAY_MODEL 조건 제거 (provider 등록만)
+// 마지막에 default 모델 결정 로직:
+//   1. .user-default-model 파일 존재 시 → 그 값 사용
+//   2. 없으면 → 첫 번째 등록된 provider 사용
+```
+
+### 2. `src/routes/api.ts` — Provider API 엔드포인트
+
+```typescript
+// GET /api/admin/provider
+//   sandbox.exec('cat /root/.openclaw/openclaw.json') → JSON 파싱
+//   models.providers 키 목록 + agents.defaults.model.primary 반환
+
+// POST /api/admin/provider/default  { model: "provider/model-id" }
+//   1. openclaw.json 읽기 → agents.defaults.model.primary 업데이트 → 저장
+//   2. .user-default-model 파일 생성 (재시작 보존)
+//   3. syncToR2() 호출
+```
+
+### 3. `src/client/api.ts` — 클라이언트 API 함수
+
+```typescript
+export interface ProviderInfo {
+  name: string;        // e.g., "cf-ai-gw-google"
+  api: string;         // e.g., "google-generative-ai"
+  models: Array<{ id: string; name: string }>;
+}
+export interface ProviderStatusResponse {
+  defaultModel: string | null;
+  providers: ProviderInfo[];
+}
+export interface UpdateDefaultModelResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+// 함수명: updateDefaultModel (NOT setDefaultModel — React setter 충돌 방지)
+export async function getProviderStatus(): Promise<ProviderStatusResponse> { ... }
+export async function updateDefaultModel(model: string): Promise<UpdateDefaultModelResponse> { ... }
+```
+
+### 4. `src/client/pages/AdminPage.tsx` — AI Provider 섹션
+
+"Gateway Controls" 아래, "OAuth Credentials" 위에 추가.
+State 이름: `currentModel`/`setCurrentModel`, `selectedModel`/`setSelectedModel`
+
+- 현재 기본 모델 표시
+- 라디오 버튼으로 provider/model 선택
+- "Apply & Restart Gateway" 버튼 → `updateDefaultModel()` + `restartGateway()`
+- 힌트: native API key provider는 env var로 직접 동작
+
+### 5. `src/client/pages/AdminPage.css` — Provider 섹션 스타일
+
+`.provider-section`, `.provider-list`, `.provider-item`, `.model-radio` 등 추가
+
+## 변경 파일 요약
+
+| 파일 | 변경 내용 |
+|------|----------|
+| `start-openclaw.sh` | if/else 배타적 구조 제거, 다중 provider 동시 설정, 사용자 선택 보존 |
+| `src/routes/api.ts` | `GET /api/admin/provider`, `POST /api/admin/provider/default` 추가 |
+| `src/client/api.ts` | `getProviderStatus()`, `updateDefaultModel()` 함수 추가 |
+| `src/client/pages/AdminPage.tsx` | "AI Provider" 섹션 추가 |
+| `src/client/pages/AdminPage.css` | Provider 섹션 스타일 추가 |
+
+## Phase 3 검증
+
+1. `npm run typecheck` — 타입 체크
+2. `npm test` — 테스트 통과
+3. `npm run dev` → Admin UI에서 provider 목록/전환 확인
+4. 배포 후:
+   - Admin UI에서 provider 목록 확인
+   - 기본 모델 변경 후 게이트웨이 재시작
+   - OpenClaw Control UI (`/`)에서 변경된 모델 확인
+   - 게이트웨이 재시작 후에도 사용자 선택 유지 확인
