@@ -243,6 +243,92 @@ if (process.env.GOOGLE_API_KEY) {
     console.log('Direct Google API provider registered: google-direct/' + modelId + ' via ' + googleBaseUrl);
 }
 
+// Direct Anthropic API key
+if (process.env.ANTHROPIC_API_KEY) {
+    const baseUrl = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com';
+    config.models.providers['anthropic-direct'] = {
+        baseUrl: baseUrl,
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        api: 'anthropic-messages',
+        models: [
+            { id: 'claude-sonnet-4-5-20250514', name: 'claude-sonnet-4-5-20250514', contextWindow: 200000, maxTokens: 8192 },
+        ],
+    };
+    firstProvider = firstProvider || ('anthropic-direct/claude-sonnet-4-5-20250514');
+    console.log('Direct Anthropic provider registered: anthropic-direct/claude-sonnet-4-5-20250514 via ' + baseUrl);
+}
+
+// Direct OpenAI API key
+if (process.env.OPENAI_API_KEY) {
+    config.models.providers['openai-direct'] = {
+        apiKey: process.env.OPENAI_API_KEY,
+        api: 'openai-completions',
+        models: [
+            { id: 'gpt-4o', name: 'gpt-4o', contextWindow: 128000, maxTokens: 16384 },
+        ],
+    };
+    firstProvider = firstProvider || ('openai-direct/gpt-4o');
+    console.log('Direct OpenAI provider registered: openai-direct/gpt-4o');
+}
+
+// OAuth credentials (from Admin UI OAuth login)
+try {
+    const oauthPath = '/root/.openclaw/credentials/oauth.json';
+    const oauth = JSON.parse(fs.readFileSync(oauthPath, 'utf8'));
+
+    // Build base URLs — route through CF AI Gateway if configured
+    var oauthOpenaiBaseUrl = 'https://api.openai.com/v1';
+    var oauthAnthropicBaseUrl = 'https://api.anthropic.com';
+    if (process.env.CF_AI_GATEWAY_ACCOUNT_ID && process.env.CF_AI_GATEWAY_GATEWAY_ID) {
+        var oauthGwBase = 'https://gateway.ai.cloudflare.com/v1/'
+            + process.env.CF_AI_GATEWAY_ACCOUNT_ID + '/'
+            + process.env.CF_AI_GATEWAY_GATEWAY_ID;
+        oauthOpenaiBaseUrl = oauthGwBase + '/openai';
+        oauthAnthropicBaseUrl = oauthGwBase + '/anthropic';
+        console.log('OAuth providers will route through CF AI Gateway:', oauthGwBase);
+    }
+
+    if (oauth.openai && oauth.openai.access_token) {
+        config.models.providers['openai-oauth'] = {
+            baseUrl: oauthOpenaiBaseUrl,
+            api: 'openai-completions',
+            apiKey: oauth.openai.api_key || oauth.openai.access_token,
+            models: [
+                // GPT-5 series (latest)
+                { id: 'gpt-5.2', name: 'gpt-5.2 (thinking)', contextWindow: 200000, maxTokens: 16384 },
+                { id: 'gpt-5.2-chat-latest', name: 'gpt-5.2 instant', contextWindow: 200000, maxTokens: 16384 },
+                { id: 'gpt-5.2-codex', name: 'gpt-5.2-codex (coding)', contextWindow: 200000, maxTokens: 16384 },
+                // GPT-4 series (keep 4.1 for long context, 4o for multimodal)
+                { id: 'gpt-4.1', name: 'gpt-4.1 (1M context)', contextWindow: 1000000, maxTokens: 32768 },
+                { id: 'gpt-4o', name: 'gpt-4o (vision)', contextWindow: 128000, maxTokens: 16384 },
+                // o-series reasoning models (keep latest variants only)
+                { id: 'o4-mini', name: 'o4-mini (fast reasoning)', contextWindow: 200000, maxTokens: 100000 },
+                { id: 'o3-pro', name: 'o3-pro (deep reasoning)', contextWindow: 200000, maxTokens: 100000 },
+                { id: 'o4-mini-deep-research', name: 'o4-mini deep research', contextWindow: 200000, maxTokens: 100000 },
+            ],
+        };
+        firstProvider = firstProvider || ('openai-oauth/gpt-4o');
+        console.log('OpenAI OAuth provider registered: openai-oauth/gpt-4o');
+    }
+    if (oauth.anthropic) {
+        var anthropicKey = oauth.anthropic.api_key || oauth.anthropic.access_token;
+        if (anthropicKey) {
+            config.models.providers['anthropic-oauth'] = {
+                baseUrl: oauthAnthropicBaseUrl,
+                apiKey: anthropicKey,
+                api: 'anthropic-messages',
+                models: [
+                    { id: 'claude-sonnet-4-5-20250514', name: 'claude-sonnet-4-5-20250514', contextWindow: 200000, maxTokens: 8192 },
+                ],
+            };
+            firstProvider = firstProvider || ('anthropic-oauth/claude-sonnet-4-5-20250514');
+            console.log('Anthropic OAuth provider registered: anthropic-oauth/claude-sonnet-4-5-20250514');
+        }
+    }
+} catch (e) {
+    // No OAuth credentials file, skip
+}
+
 // Set default model: user preference > first available provider
 const userDefaultFile = '/root/.openclaw/.user-default-model';
 let defaultModel = null;

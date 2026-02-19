@@ -280,101 +280,122 @@ OpenClaw이 요청 시 access token 사용
 
 ---
 
-# Phase 3: 다중 Provider 관리 + Admin UI 전환
+# Phase 3: 다중 Provider 관리 + Admin UI 전환 + OAuth 로그인
 
-## Context
+## Phase 3a: 다중 Provider 동시 설정
 
-`start-openclaw.sh`의 Node.js 패칭 스크립트가 provider를 **if/else 배타적으로** 설정한다.
-`CF_AI_GATEWAY_MODEL`이 있으면 `GOOGLE_API_KEY` provider는 무시됨.
-이를 수정하여 모든 가용 provider를 동시 등록하고, Admin UI에서 기본 모델을 전환할 수 있게 한다.
+### Context
 
-**이전 시도 실패 원인:** `setDefaultModel`이 API 함수명과 React `useState` setter명이 충돌 → 타입 에러.
-API 함수를 `updateDefaultModel()`, state를 `currentModel`/`setCurrentModel`로 명명하여 해결.
+`start-openclaw.sh`의 Node.js 패칭 스크립트가 provider를 if/else 배타적으로 설정.
+`CF_AI_GATEWAY_MODEL`이 있으면 `GOOGLE_API_KEY` provider 무시됨.
+모든 가용 provider를 동시 등록하고, Admin UI에서 기본 모델을 전환할 수 있게 개선.
 
-## 구현 계획
+### 변경 내용
 
-### 1. `start-openclaw.sh` — 다중 Provider 동시 설정
-
-라인 183-243의 if/else 배타적 구조를 제거:
-
-- `GOOGLE_API_KEY` 조건에서 `&& !process.env.CF_AI_GATEWAY_MODEL` 제거
-- provider 등록과 기본 모델 설정을 분리
-- `.user-default-model` 파일로 사용자 선택 보존
-
-```javascript
-// 기존 CF_AI_GATEWAY_MODEL 블록은 유지 (provider 등록만, default 설정 제거)
-// 기존 GOOGLE_API_KEY 블록에서 && !CF_AI_GATEWAY_MODEL 조건 제거 (provider 등록만)
-// 마지막에 default 모델 결정 로직:
-//   1. .user-default-model 파일 존재 시 → 그 값 사용
-//   2. 없으면 → 첫 번째 등록된 provider 사용
-```
-
-### 2. `src/routes/api.ts` — Provider API 엔드포인트
-
-```typescript
-// GET /api/admin/provider
-//   sandbox.exec('cat /root/.openclaw/openclaw.json') → JSON 파싱
-//   models.providers 키 목록 + agents.defaults.model.primary 반환
-
-// POST /api/admin/provider/default  { model: "provider/model-id" }
-//   1. openclaw.json 읽기 → agents.defaults.model.primary 업데이트 → 저장
-//   2. .user-default-model 파일 생성 (재시작 보존)
-//   3. syncToR2() 호출
-```
-
-### 3. `src/client/api.ts` — 클라이언트 API 함수
-
-```typescript
-export interface ProviderInfo {
-  name: string;        // e.g., "cf-ai-gw-google"
-  api: string;         // e.g., "google-generative-ai"
-  models: Array<{ id: string; name: string }>;
-}
-export interface ProviderStatusResponse {
-  defaultModel: string | null;
-  providers: ProviderInfo[];
-}
-export interface UpdateDefaultModelResponse {
-  success: boolean;
-  message?: string;
-  error?: string;
-}
-// 함수명: updateDefaultModel (NOT setDefaultModel — React setter 충돌 방지)
-export async function getProviderStatus(): Promise<ProviderStatusResponse> { ... }
-export async function updateDefaultModel(model: string): Promise<UpdateDefaultModelResponse> { ... }
-```
-
-### 4. `src/client/pages/AdminPage.tsx` — AI Provider 섹션
-
-"Gateway Controls" 아래, "OAuth Credentials" 위에 추가.
-State 이름: `currentModel`/`setCurrentModel`, `selectedModel`/`setSelectedModel`
-
-- 현재 기본 모델 표시
-- 라디오 버튼으로 provider/model 선택
-- "Apply & Restart Gateway" 버튼 → `updateDefaultModel()` + `restartGateway()`
-- 힌트: native API key provider는 env var로 직접 동작
-
-### 5. `src/client/pages/AdminPage.css` — Provider 섹션 스타일
-
-`.provider-section`, `.provider-list`, `.provider-item`, `.model-radio` 등 추가
-
-## 변경 파일 요약
-
-| 파일 | 변경 내용 |
-|------|----------|
-| `start-openclaw.sh` | if/else 배타적 구조 제거, 다중 provider 동시 설정, 사용자 선택 보존 |
+| 파일 | 변경 |
+|------|------|
+| `start-openclaw.sh` | if/else 배타적 구조 제거, 다중 provider 동시 설정, `.user-default-model` 파일로 사용자 선택 보존 |
 | `src/routes/api.ts` | `GET /api/admin/provider`, `POST /api/admin/provider/default` 추가 |
 | `src/client/api.ts` | `getProviderStatus()`, `updateDefaultModel()` 함수 추가 |
-| `src/client/pages/AdminPage.tsx` | "AI Provider" 섹션 추가 |
+| `src/client/pages/AdminPage.tsx` | "AI Provider" 섹션 추가 (라디오 버튼 + Apply & Restart) |
 | `src/client/pages/AdminPage.css` | Provider 섹션 스타일 추가 |
 
-## Phase 3 검증
+### 참고
 
-1. `npm run typecheck` — 타입 체크
-2. `npm test` — 테스트 통과
-3. `npm run dev` → Admin UI에서 provider 목록/전환 확인
-4. 배포 후:
-   - Admin UI에서 provider 목록 확인
-   - 기본 모델 변경 후 게이트웨이 재시작
-   - OpenClaw Control UI (`/`)에서 변경된 모델 확인
-   - 게이트웨이 재시작 후에도 사용자 선택 유지 확인
+- API 함수명 `updateDefaultModel` 사용 (`setDefaultModel`은 React useState setter와 충돌)
+- Admin UI(`/_admin`)에서 접속
+
+---
+
+## Phase 3b: Admin UI에서 OAuth 로그인 (OpenAI + Anthropic)
+
+### Context
+
+현재 OAuth 크레덴셜은 로컬에서 `openclaw onboard` 실행 후 파일을 수동 업로드해야 함.
+Admin UI 웹페이지에서 직접 OAuth 인증을 할 수 있도록 개선.
+
+OpenCode 리포지토리(`github.com/anomalyco/opencode`) 분석 결과:
+
+| Provider | 인증 방식 | Client ID |
+|----------|----------|-----------|
+| **OpenAI** | Device Code Flow | `app_EMoamEEZ73f0CkXaXp7hrann` |
+| **Anthropic** | Code Paste Flow (PKCE) | `9d1c250a-e61b-44d9-88ed-5944d1962f5e` |
+
+### OpenAI Device Code Flow
+
+1. POST `auth.openai.com/api/accounts/deviceauth/usercode` → `device_auth_id` + `user_code`
+2. 사용자가 `auth.openai.com/codex/device`에서 코드 입력
+3. Poll `auth.openai.com/api/accounts/deviceauth/token` → `authorization_code` + `code_verifier`
+4. Exchange at `auth.openai.com/oauth/token` → `access_token` + `refresh_token`
+
+### Anthropic Code Flow
+
+1. Worker에서 PKCE 생성 (Web Crypto API), 컨테이너에 `code_verifier` 저장
+2. 사용자가 `console.anthropic.com/oauth/authorize`에서 인증 → 코드 표시
+3. 사용자가 코드 복사 → Admin UI에 붙여넣기
+4. Exchange at `console.anthropic.com/v1/oauth/token` → 토큰 저장
+5. `api.anthropic.com/api/oauth/claude_cli/create_api_key`로 API key 생성
+
+### API 엔드포인트 (`src/routes/oauth.ts` — 신규)
+
+| 엔드포인트 | 동작 |
+|-----------|------|
+| `GET /api/admin/oauth/status` | 각 provider 연결 상태 반환 |
+| `POST /api/admin/oauth/openai/start` | Device Code 요청 → user_code 반환 |
+| `POST /api/admin/oauth/openai/poll` | 인증 완료 폴링 → 완료 시 토큰 교환 + 저장 |
+| `POST /api/admin/oauth/anthropic/start` | PKCE 생성 + 인증 URL 반환 |
+| `POST /api/admin/oauth/anthropic/exchange` | 코드로 토큰 교환 |
+| `DELETE /api/admin/oauth/:provider` | 크레덴셜 삭제 + R2 sync |
+
+외부 API 호출은 `sandbox.exec('curl ...')` 사용 (컨테이너에서 outgoing HTTP).
+
+### OAuth 유틸리티 (`src/gateway/oauth.ts` — 신규)
+
+- `generatePKCE()`: Web Crypto API로 code_verifier + code_challenge 생성
+- `readOAuthCredentials()` / `writeOAuthCredentials()`: `/root/.openclaw/credentials/oauth.json` 관리
+- `writePendingState()` / `readPendingState()`: `/tmp/.oauth-pending-{provider}.json`로 진행 중 상태 관리
+
+### Admin UI (`src/client/pages/AdminPage.tsx`)
+
+기존 "OAuth Credentials" 파일 업로드 섹션을 "OAuth Login" 섹션으로 대체:
+
+**미연결 상태:**
+```
+┌──────────────────────┐ ┌──────────────────────┐
+│ OpenAI               │ │ Anthropic            │
+│ ○ Not connected      │ │ ○ Not connected      │
+│ [Login with OpenAI]  │ │ [Login with Claude]  │
+└──────────────────────┘ └──────────────────────┘
+```
+
+**OpenAI 인증 진행 시:** 코드 표시 + "Waiting..." 스피너
+**Anthropic 인증 진행 시:** 코드 입력 필드 + "Submit Code" 버튼
+**연결 완료:** "Connected" 뱃지 + "Logout" 버튼
+
+기존 파일 업로드는 "Advanced: Manual Upload" 접이식 섹션으로 유지.
+
+### 보안
+
+- access_token/refresh_token은 브라우저에 반환하지 않음 (연결 상태만)
+- PKCE code_verifier는 컨테이너 `/tmp/`에만 저장
+- 모든 엔드포인트 Cloudflare Access JWT 보호
+
+### 변경 파일 요약
+
+| 파일 | 변경 |
+|------|------|
+| `src/gateway/oauth.ts` | **신규** — PKCE, 크레덴셜 관리 유틸 |
+| `src/routes/oauth.ts` | **신규** — OAuth API 엔드포인트 6개 |
+| `src/routes/api.ts` | oauth 라우터 마운트 (2줄) |
+| `src/client/api.ts` | OAuth 클라이언트 API 함수 6개 |
+| `src/client/pages/AdminPage.tsx` | OAuth Login 섹션 |
+| `src/client/pages/AdminPage.css` | OAuth 스타일 |
+
+### Phase 3b 검증
+
+1. `npm run typecheck` + `npm test`
+2. 배포 후 Admin UI(`/_admin`)에서:
+   - OpenAI: "Login" → 코드 표시 → `auth.openai.com/codex/device`에서 입력 → Connected
+   - Anthropic: "Login" → 브라우저 탭 열림 → 코드 복사/붙여넣기 → Connected
+   - Logout → 크레덴셜 삭제 확인
+   - 컨테이너 재시작 후 R2에서 복원 확인

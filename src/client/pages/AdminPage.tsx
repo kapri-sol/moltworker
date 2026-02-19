@@ -10,6 +10,12 @@ import {
   uploadCredential,
   getProviderStatus,
   updateDefaultModel,
+  getOAuthStatus,
+  startOpenAIOAuth,
+  exchangeOpenAIOAuth,
+  startAnthropicOAuth,
+  exchangeAnthropicCode,
+  logoutOAuth,
   AuthError,
   type PendingDevice,
   type PairedDevice,
@@ -18,6 +24,7 @@ import {
   type CredentialFile,
   type ProviderInfo,
   type ProviderStatusResponse,
+  type OAuthStatusResponse,
 } from '../api';
 import './AdminPage.css';
 
@@ -66,6 +73,18 @@ export default function AdminPage() {
   const [syncInProgress, setSyncInProgress] = useState(false);
   const [uploadInProgress, setUploadInProgress] = useState(false);
   const [modelUpdateInProgress, setModelUpdateInProgress] = useState(false);
+
+  // OAuth state
+  const [oauthStatus, setOauthStatus] = useState<OAuthStatusResponse | null>(null);
+  const [openaiFlowActive, setOpenaiFlowActive] = useState(false);
+  const [openaiAuthUrl, setOpenaiAuthUrl] = useState<string | null>(null);
+  const [openaiCode, setOpenaiCode] = useState('');
+  const [openaiExchanging, setOpenaiExchanging] = useState(false);
+  const [anthropicFlowActive, setAnthropicFlowActive] = useState(false);
+  const [anthropicAuthUrl, setAnthropicAuthUrl] = useState<string | null>(null);
+  const [anthropicCode, setAnthropicCode] = useState('');
+  const [anthropicExchanging, setAnthropicExchanging] = useState(false);
+  const [showAdvancedUpload, setShowAdvancedUpload] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     try {
@@ -124,12 +143,22 @@ export default function AdminPage() {
     }
   }, [selectedModel]);
 
+  const fetchOAuthStatus = useCallback(async () => {
+    try {
+      const status = await getOAuthStatus();
+      setOauthStatus(status);
+    } catch (err) {
+      console.error('Failed to fetch OAuth status:', err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchDevices();
     fetchStorageStatus();
     fetchCredentials();
     fetchProviders();
-  }, [fetchDevices, fetchStorageStatus, fetchCredentials, fetchProviders]);
+    fetchOAuthStatus();
+  }, [fetchDevices, fetchStorageStatus, fetchCredentials, fetchProviders, fetchOAuthStatus]);
 
   const handleApprove = async (requestId: string) => {
     setActionInProgress(requestId);
@@ -289,6 +318,150 @@ export default function AdminPage() {
     }
   };
 
+  // OAuth: Start OpenAI login
+  const handleOpenAILogin = async () => {
+    setError(null);
+    setOpenaiFlowActive(true);
+    try {
+      const result = await startOpenAIOAuth();
+      if (result.error) {
+        setError(result.error);
+        setOpenaiFlowActive(false);
+        return;
+      }
+      setOpenaiAuthUrl(result.auth_url);
+      // Try to open in new tab (may be blocked by popup blocker)
+      const newWindow = window.open(result.auth_url, '_blank');
+      if (!newWindow) {
+        console.log('Popup blocked. User should click the auth URL link.');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start OpenAI login');
+      setOpenaiFlowActive(false);
+    }
+  };
+
+  // OAuth: Submit OpenAI callback URL or code
+  const handleOpenAIExchange = async () => {
+    if (!openaiCode.trim()) return;
+    setOpenaiExchanging(true);
+    setError(null);
+    try {
+      // Accept either a full callback URL or just the code
+      const input = openaiCode.trim();
+      let code = input;
+      if (input.startsWith('http')) {
+        try {
+          const url = new URL(input);
+          code = url.searchParams.get('code') || input;
+        } catch {
+          // treat as plain code
+        }
+      }
+      const result = await exchangeOpenAIOAuth(code);
+      if (result.status === 'complete') {
+        setOpenaiFlowActive(false);
+        setOpenaiCode('');
+        setOpenaiAuthUrl(null);
+        await fetchOAuthStatus();
+        // Refresh provider list after gateway restarts (give it time to boot)
+        setTimeout(() => fetchProviders(), 3000);
+      } else {
+        setError(result.error || 'Code exchange failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Code exchange failed');
+    } finally {
+      setOpenaiExchanging(false);
+    }
+  };
+
+  // OAuth: Start Anthropic login
+  const handleAnthropicLogin = async () => {
+    setError(null);
+    setAnthropicFlowActive(true);
+    try {
+      const result = await startAnthropicOAuth();
+      if (result.error) {
+        setError(result.error);
+        setAnthropicFlowActive(false);
+        return;
+      }
+      setAnthropicAuthUrl(result.auth_url);
+      // Try to open in new tab (may be blocked by popup blocker)
+      const newWindow = window.open(result.auth_url, '_blank');
+      if (!newWindow) {
+        // Popup blocked - user will use the link instead
+        console.log('Popup blocked. User should click the auth URL link.');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start Anthropic login');
+      setAnthropicFlowActive(false);
+    }
+  };
+
+  // OAuth: Submit Anthropic code
+  const handleAnthropicExchange = async () => {
+    if (!anthropicCode.trim()) return;
+    setAnthropicExchanging(true);
+    setError(null);
+    try {
+      const result = await exchangeAnthropicCode(anthropicCode.trim());
+      if (result.status === 'complete') {
+        setAnthropicFlowActive(false);
+        setAnthropicCode('');
+        await fetchOAuthStatus();
+        // Refresh provider list after gateway restarts (give it time to boot)
+        setTimeout(() => fetchProviders(), 3000);
+      } else {
+        setError(result.error || 'Code exchange failed');
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Code exchange failed');
+    } finally {
+      setAnthropicExchanging(false);
+    }
+  };
+
+  // OAuth: Cancel OpenAI flow
+  const handleOpenAICancel = async () => {
+    setOpenaiFlowActive(false);
+    setOpenaiAuthUrl(null);
+    setOpenaiCode('');
+    try {
+      await logoutOAuth('openai');
+    } catch {
+      // Ignore errors on cancel
+    }
+  };
+
+  // OAuth: Cancel Anthropic flow
+  const handleAnthropicCancel = async () => {
+    setAnthropicFlowActive(false);
+    setAnthropicAuthUrl(null);
+    setAnthropicCode('');
+    try {
+      await logoutOAuth('anthropic');
+    } catch {
+      // Ignore errors on cancel
+    }
+  };
+
+  // OAuth: Logout
+  const handleOAuthLogout = async (provider: 'openai' | 'anthropic') => {
+    if (!confirm(`Remove ${provider} OAuth credentials? You will need to re-authenticate.`)) {
+      return;
+    }
+    try {
+      await logoutOAuth(provider);
+      await fetchOAuthStatus();
+      // Refresh provider list after gateway restarts (give it time to boot)
+      setTimeout(() => fetchProviders(), 3000);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Logout failed');
+    }
+  };
+
   return (
     <div className="devices-page">
       {error && (
@@ -443,52 +616,210 @@ export default function AdminPage() {
 
       <section className="devices-section">
         <div className="section-header">
-          <h2>OAuth Credentials</h2>
+          <h2>OAuth Login</h2>
         </div>
 
-        {credentialFiles.length > 0 ? (
-          <div className="credential-files">
-            <p className="hint">Current credential files:</p>
-            <ul className="file-list">
-              {credentialFiles.map((file) => (
-                <li key={file.name}>
-                  <strong>{file.name}</strong> ({(file.size / 1024).toFixed(1)}KB, {file.modified})
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : (
-          <div className="empty-state">
-            <p>No OAuth credentials uploaded yet</p>
-          </div>
-        )}
-
-        <div className="upload-section">
-          <label htmlFor="credential-upload" className="btn btn-primary" style={{ cursor: 'pointer' }}>
-            {uploadInProgress && <ButtonSpinner />}
-            {uploadInProgress ? 'Uploading...' : 'Choose File...'}
-          </label>
-          <input
-            id="credential-upload"
-            type="file"
-            accept=".json"
-            onChange={handleUploadCredential}
-            disabled={uploadInProgress}
-            style={{ display: 'none' }}
-          />
-        </div>
-
-        <p className="hint">
-          <strong>How to obtain OAuth credentials:</strong>
-          <br />
-          1. Install OpenClaw locally: <code>npm install -g openclaw</code>
-          <br />
-          2. Run onboarding: <code>openclaw onboard --auth-choice openai-codex</code> (or other provider)
-          <br />
-          3. Upload the generated file: <code>~/.openclaw/credentials/oauth.json</code>
-          <br />
-          4. Restart the gateway to apply the new credentials
+        <p className="hint" style={{ marginBottom: '1.5rem' }}>
+          Log in with your ChatGPT Plus/Pro or Claude Pro subscription to use AI models without API
+          costs.
         </p>
+
+        <div className="oauth-providers">
+          {/* OpenAI Card */}
+          <div
+            className={`oauth-card ${oauthStatus?.openai.connected ? 'connected' : ''} ${openaiFlowActive ? 'pending' : ''}`}
+          >
+            <div className="oauth-header">
+              <span className="oauth-provider-name">OpenAI</span>
+              {oauthStatus?.openai.connected && (
+                <span className="oauth-badge connected">Connected</span>
+              )}
+              {openaiFlowActive && <span className="oauth-badge pending">Pending</span>}
+            </div>
+
+            {oauthStatus?.openai.connected && !openaiFlowActive ? (
+              <div>
+                <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', margin: '0.5rem 0' }}>
+                  Logged in{' '}
+                  {oauthStatus.openai.obtainedAt && (
+                    <span>({formatTimeAgo(oauthStatus.openai.obtainedAt)})</span>
+                  )}
+                </p>
+                <button className="btn btn-secondary btn-sm" onClick={() => handleOAuthLogout('openai')}>
+                  Logout
+                </button>
+              </div>
+            ) : openaiFlowActive ? (
+              <div>
+                <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', margin: '0.5rem 0' }}>
+                  {openaiAuthUrl ? (
+                    <>
+                      Click to authorize:{' '}
+                      <a
+                        href={openaiAuthUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ wordBreak: 'break-all' }}
+                      >
+                        {openaiAuthUrl}
+                      </a>
+                    </>
+                  ) : (
+                    'A browser tab opened.'
+                  )}{' '}
+                  After authorizing, copy the full URL from the address bar and paste below:
+                </p>
+                <input
+                  type="text"
+                  className="oauth-input"
+                  placeholder="Paste callback URL or authorization code"
+                  value={openaiCode}
+                  onChange={(e) => setOpenaiCode(e.target.value)}
+                  disabled={openaiExchanging}
+                />
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleOpenAIExchange}
+                    disabled={openaiExchanging || !openaiCode.trim()}
+                  >
+                    {openaiExchanging && <ButtonSpinner />}
+                    {openaiExchanging ? 'Connecting...' : 'Connect'}
+                  </button>
+                  <button className="btn btn-secondary btn-sm" onClick={handleOpenAICancel}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button className="btn btn-primary" onClick={handleOpenAILogin}>
+                Login with OpenAI
+              </button>
+            )}
+          </div>
+
+          {/* Anthropic Card */}
+          <div
+            className={`oauth-card ${oauthStatus?.anthropic.connected ? 'connected' : ''} ${anthropicFlowActive ? 'pending' : ''}`}
+          >
+            <div className="oauth-header">
+              <span className="oauth-provider-name">Anthropic</span>
+              {oauthStatus?.anthropic.connected && (
+                <span className="oauth-badge connected">Connected</span>
+              )}
+              {anthropicFlowActive && <span className="oauth-badge pending">Pending</span>}
+            </div>
+
+            {oauthStatus?.anthropic.connected && !anthropicFlowActive ? (
+              <div>
+                <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', margin: '0.5rem 0' }}>
+                  Logged in{' '}
+                  {oauthStatus.anthropic.obtainedAt && (
+                    <span>({formatTimeAgo(oauthStatus.anthropic.obtainedAt)})</span>
+                  )}
+                </p>
+                <button className="btn btn-secondary btn-sm" onClick={() => handleOAuthLogout('anthropic')}>
+                  Logout
+                </button>
+              </div>
+            ) : anthropicFlowActive ? (
+              <div>
+                <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', margin: '0.5rem 0' }}>
+                  {anthropicAuthUrl ? (
+                    <>
+                      Click to authorize:{' '}
+                      <a
+                        href={anthropicAuthUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{ wordBreak: 'break-all' }}
+                      >
+                        {anthropicAuthUrl}
+                      </a>
+                    </>
+                  ) : (
+                    'A browser tab opened.'
+                  )}{' '}
+                  Paste the authorization code below:
+                </p>
+                <input
+                  type="text"
+                  className="oauth-input"
+                  placeholder="Paste authorization code"
+                  value={anthropicCode}
+                  onChange={(e) => setAnthropicCode(e.target.value)}
+                  disabled={anthropicExchanging}
+                />
+                <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.5rem' }}>
+                  <button
+                    className="btn btn-primary"
+                    onClick={handleAnthropicExchange}
+                    disabled={anthropicExchanging || !anthropicCode.trim()}
+                  >
+                    {anthropicExchanging && <ButtonSpinner />}
+                    {anthropicExchanging ? 'Exchanging...' : 'Submit Code'}
+                  </button>
+                  <button className="btn btn-secondary btn-sm" onClick={handleAnthropicCancel}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button className="btn btn-primary" onClick={handleAnthropicLogin}>
+                Login with Anthropic
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Advanced: Manual Upload */}
+        <div style={{ marginTop: '2rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+          <button className="advanced-toggle" onClick={() => setShowAdvancedUpload(!showAdvancedUpload)}>
+            {showAdvancedUpload ? '▼' : '▸'} Advanced: Manual File Upload
+          </button>
+
+          {showAdvancedUpload && (
+            <div style={{ marginTop: '1rem' }}>
+              {credentialFiles.length > 0 ? (
+                <div className="credential-files">
+                  <p className="hint">Current credential files:</p>
+                  <ul className="file-list">
+                    {credentialFiles.map((file) => (
+                      <li key={file.name}>
+                        <strong>{file.name}</strong> ({(file.size / 1024).toFixed(1)}KB, {file.modified})
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : (
+                <p className="hint">No credential files uploaded yet</p>
+              )}
+
+              <div className="upload-section">
+                <label
+                  htmlFor="credential-upload"
+                  className="btn btn-secondary btn-sm"
+                  style={{ cursor: 'pointer' }}
+                >
+                  {uploadInProgress && <ButtonSpinner />}
+                  {uploadInProgress ? 'Uploading...' : 'Choose File...'}
+                </label>
+                <input
+                  id="credential-upload"
+                  type="file"
+                  accept=".json"
+                  onChange={handleUploadCredential}
+                  disabled={uploadInProgress}
+                  style={{ display: 'none' }}
+                />
+              </div>
+
+              <p className="hint">
+                Upload oauth.json from local OpenClaw installation: <code>~/.openclaw/credentials/oauth.json</code>
+              </p>
+            </div>
+          )}
+        </div>
       </section>
 
       {loading ? (

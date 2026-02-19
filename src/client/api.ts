@@ -201,3 +201,70 @@ export async function updateDefaultModel(model: string): Promise<UpdateDefaultMo
     body: JSON.stringify({ model }),
   });
 }
+
+export interface OAuthProviderStatus {
+  connected: boolean;
+  pending: boolean;
+  pendingUserCode?: string;
+  pendingVerifyUrl?: string;
+  obtainedAt?: number;
+}
+
+export interface OAuthStatusResponse {
+  openai: OAuthProviderStatus;
+  anthropic: OAuthProviderStatus;
+  error?: string;
+}
+
+export interface OAuthStartOpenAIResponse {
+  auth_url: string;
+  state: string;
+  error?: string;
+}
+
+export interface OAuthStartAnthropicResponse {
+  auth_url: string;
+  state: string;
+  error?: string;
+}
+
+export interface OAuthExchangeResponse {
+  status: 'complete' | 'error';
+  error?: string;
+}
+
+export interface OAuthLogoutResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+}
+
+export async function getOAuthStatus(): Promise<OAuthStatusResponse> {
+  return apiRequest<OAuthStatusResponse>('/oauth/status');
+}
+
+export async function startOpenAIOAuth(): Promise<OAuthStartOpenAIResponse> {
+  return apiRequest<OAuthStartOpenAIResponse>('/oauth/openai/start', { method: 'POST' });
+}
+
+export async function exchangeOpenAIOAuth(code: string): Promise<OAuthExchangeResponse> {
+  return apiRequest<OAuthExchangeResponse>('/oauth/openai/exchange', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function startAnthropicOAuth(): Promise<OAuthStartAnthropicResponse> {
+  return apiRequest<OAuthStartAnthropicResponse>('/oauth/anthropic/start', { method: 'POST' });
+}
+
+export async function exchangeAnthropicCode(code: string): Promise<OAuthExchangeResponse> {
+  return apiRequest<OAuthExchangeResponse>('/oauth/anthropic/exchange', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  });
+}
+
+export async function logoutOAuth(provider: 'openai' | 'anthropic'): Promise<OAuthLogoutResponse> {
+  return apiRequest<OAuthLogoutResponse>(`/oauth/${provider}`, { method: 'DELETE' });
+}

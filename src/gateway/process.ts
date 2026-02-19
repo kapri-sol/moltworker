@@ -42,6 +42,41 @@ export async function findExistingMoltbotProcess(sandbox: Sandbox): Promise<Proc
 }
 
 /**
+ * Restart the gateway using OpenClaw's built-in restart command
+ *
+ * @param sandbox - The sandbox instance
+ */
+export async function restartGateway(sandbox: Sandbox): Promise<void> {
+  console.log('[Gateway] Restarting gateway via openclaw gateway restart...');
+  await sandbox.exec('openclaw gateway restart 2>&1; true');
+  console.log('[Gateway] Restart command sent');
+}
+
+/**
+ * Gracefully stop the gateway using OpenClaw's stop command
+ * Used when ensureMoltbotGateway finds a stuck process
+ *
+ * @param sandbox - The sandbox instance
+ */
+export async function stopGateway(sandbox: Sandbox): Promise<void> {
+  console.log('[Gateway] Stopping gateway via openclaw gateway stop...');
+  try {
+    await sandbox.exec('openclaw gateway stop 2>&1; true');
+  } catch (e) {
+    console.log('[Gateway] Stop command failed:', e);
+  }
+  // Clean up lock files in case stop didn't fully clean up
+  try {
+    await sandbox.exec(
+      'rm -f /tmp/openclaw-gateway.lock /root/.openclaw/gateway.lock 2>/dev/null; true',
+    );
+  } catch {
+    // Ignore cleanup errors
+  }
+  console.log('[Gateway] Gateway stopped');
+}
+
+/**
  * Ensure the OpenClaw gateway is running
  *
  * This will:
@@ -78,13 +113,9 @@ export async function ensureMoltbotGateway(sandbox: Sandbox, env: MoltbotEnv): P
       return existingProcess;
       // eslint-disable-next-line no-unused-vars
     } catch (_e) {
-      // Timeout waiting for port - process is likely dead or stuck, kill and restart
-      console.log('Existing process not reachable after full timeout, killing and restarting...');
-      try {
-        await existingProcess.kill();
-      } catch (killError) {
-        console.log('Failed to kill process:', killError);
-      }
+      // Timeout waiting for port - process is likely dead or stuck, stop and restart
+      console.log('Existing process not reachable after full timeout, stopping and restarting...');
+      await stopGateway(sandbox);
     }
   }
 

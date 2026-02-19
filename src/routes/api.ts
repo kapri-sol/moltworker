@@ -4,9 +4,11 @@ import { createAccessMiddleware } from '../auth';
 import {
   ensureMoltbotGateway,
   findExistingMoltbotProcess,
+  restartGateway,
   syncToR2,
   waitForProcess,
 } from '../gateway';
+import { oauthApi } from './oauth';
 
 // CLI commands can take 10-15 seconds to complete due to WebSocket connection overhead
 const CLI_TIMEOUT_MS = 20000;
@@ -257,37 +259,20 @@ adminApi.post('/storage/sync', async (c) => {
   }
 });
 
-// POST /api/admin/gateway/restart - Kill the current gateway and start a new one
+// POST /api/admin/gateway/restart - Restart the gateway using openclaw's built-in restart
 adminApi.post('/gateway/restart', async (c) => {
   const sandbox = c.get('sandbox');
 
   try {
-    // Find and kill the existing gateway process
-    const existingProcess = await findExistingMoltbotProcess(sandbox);
-
-    if (existingProcess) {
-      console.log('Killing existing gateway process:', existingProcess.id);
-      try {
-        await existingProcess.kill();
-      } catch (killErr) {
-        console.error('Error killing process:', killErr);
-      }
-      // Wait a moment for the process to die
-      await new Promise((r) => setTimeout(r, 2000));
-    }
-
-    // Start a new gateway in the background
-    const bootPromise = ensureMoltbotGateway(sandbox, c.env).catch((err) => {
+    // Restart gateway in the background using openclaw's built-in command
+    const restartPromise = restartGateway(sandbox).catch((err) => {
       console.error('Gateway restart failed:', err);
     });
-    c.executionCtx.waitUntil(bootPromise);
+    c.executionCtx.waitUntil(restartPromise);
 
     return c.json({
       success: true,
-      message: existingProcess
-        ? 'Gateway process killed, new instance starting...'
-        : 'No existing process found, starting new instance...',
-      previousProcessId: existingProcess?.id,
+      message: 'Gateway restarting...',
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -522,6 +507,9 @@ adminApi.post('/provider/default', async (c) => {
     return c.json({ error: errorMessage }, 500);
   }
 });
+
+// Mount OAuth routes under /admin/oauth
+adminApi.route('/oauth', oauthApi);
 
 // Mount admin API routes under /admin
 api.route('/admin', adminApi);
